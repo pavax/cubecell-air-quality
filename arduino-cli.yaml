@@ -1,0 +1,7 @@
+board_manager:
+  additional_urls: []
+
+directories:
+  data: C:/Users/patri/AppData/Local/arduino-cli-cubecell
+  downloads: C:/Users/patri/AppData/Local/arduino-cli-cubecell/staging
+  user: C:/Users/patri/AppData/Local/arduino-cli-cubecell/sketchbook
