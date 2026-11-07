@@ -90,11 +90,10 @@ Dieselbe Kalibrierung startet `AT+Reclibrate=1`. Die automatische Selbstkalibrie
 
 ## Patches am CubeCell-Core
 
-Der Build nutzt den lokalen Klon von [pavax/CubeCell-Arduino](https://github.com/pavax/CubeCell-Arduino), Commit `8ceb8da`, unter `C:\Users\patri\AppData\Local\arduino-cli-cubecell\sketchbook\hardware\CubeCell\CubeCell-Arduino`. Die folgenden Änderungen sind dort nicht committet. Der Fork bringt `enableRgb` / `rgbIsEnabled` schon mit: `turnOnRGB` leuchtet nur, wenn die LED freigegeben ist.
+Der Build nutzt [pavax/CubeCell-Arduino](https://github.com/pavax/CubeCell-Arduino) `926c29b`. `turnOnRGB` leuchtet nur nach `enableRgb()`.
 
-| Datei | Änderung | Warum |
-|---|---|---|
-| `cores/asr650x/Wire/Wire.h` | `I2CTIMEOUT` von 10 auf 150 | Der SCD30 antwortet nicht innerhalb von 10 ms. Mit 150 ms kommen die Messwerte an. |
-| `libraries/LoRa/src/LoRaWan_APP.cpp` | Wartezeit nach `Vext` low in `turnOnRGB` von 1 ms auf 5 ms | Dieselbe Wartezeit wie im Heltec-RGB-Beispiel. 1 ms reicht nicht, bis die LED-Versorgung steht. |
-| `libraries/LoRa/src/LoRaWan_APP.h`, `LoRaWan_APP.cpp` | `LoRaWAN.holdVext(bool)`. Voreinstellung `false`: `Vext` bleibt im Schlaf aus. `turnOffRGB` schaltet die Versorgung nur ab, wenn der Halt nicht gesetzt ist | Der Sketch wählt es pro Zyklus. Join und Downlink rufen `turnOffRGB` auf und würden die Sensoren sonst abschalten. |
-| `cores/asr650x/lora/system/low_power.c` | `driveHeldVext()` direkt vor und nach `CySysPmDeepSleep`, nur wenn `holdVext(true)` | Der Schlafpfad legt UART-TX (`P3_1`) auf analog. `Vext` ist der Nachbarpin `P3_2`. Nur mit Halt wird `P3_2` danach wieder low getrieben. Ohne Halt schreibt der Schlafpfad den Pin nicht an. |
+Dieser Commit macht drei Dinge:
+
+- `I2CTIMEOUT` ist 150 ms, sonst antwortet der SCD30 nicht.
+- `turnOnRGB` wartet 5 ms, nachdem es `Vext` einschaltet.
+- `LoRaWAN.holdVext(true)` lässt `Vext` im Tiefschlaf an. Voreinstellung ist aus, und `turnOffRGB` schaltet die Versorgung dann ab. Mit Halt treibt der Schlafpfad den Pin danach wieder low.
