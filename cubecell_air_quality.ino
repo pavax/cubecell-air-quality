@@ -25,13 +25,20 @@ SCD30 airSensor;
 
 #define HUM_COMFORT_MIN 30
 #define HUM_COMFORT_MAX 60
-#define HUM_SCORE_MAX 30
+#define HUM_SCORE_MAX 25
 #define CO2_GOOD_PPM 800
 #define CO2_POOR_PPM 2000
-#define CO2_SCORE_MAX 70
+#define CO2_SCORE_MAX 50
+#define GAS_SCORE_MAX 25
+#define GAS_BASELINE_LEARN_SAMPLES 3
 
-// 0xRRGGBB. Cyan während der Messung, unabhängig von den Farben des Cores.
+// 0xRRGGBB. Cyan while measuring, independent of the core's colors.
 #define COLOR_MEASURE 0x005050
+
+// AQI sleep colors, same brightness as COLOR_MEASURE.
+#define COLOR_AQI_RED 0x500000
+#define COLOR_AQI_YELLOW 0x505000
+#define COLOR_AQI_GREEN 0x005000
 
 /*LoraWan channelsmask, default channels 0-7*/
 uint16_t userChannelsMask[6] = { 0x00FF, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 };
@@ -70,7 +77,52 @@ static volatile bool accelWoke = false;
 static bool recalibrateDuty = false;
 static uint16_t appliedPressureMbar = 0;
 static bool sensorsStayOn = false;
+static int32_t gasBaseline = 0;
+static uint8_t gasLearnCount = 0;
+// -1: no valid AQI component. Otherwise AQI from 0 to 100.
+static int sleepAirQualityScore = -1;
 void onWakeUp();
+
+void resetGasBaseline() {
+  gasBaseline = 0;
+  gasLearnCount = 0;
+}
+
+// Learns or raises the baseline. true = scoring allowed (after learn phase).
+bool updateGasBaseline(int32_t gas) {
+  if (gas <= 0) {
+    return false;
+  }
+  if (gasLearnCount < GAS_BASELINE_LEARN_SAMPLES) {
+    if (gas > gasBaseline) {
+      gasBaseline = gas;
+    }
+    gasLearnCount++;
+    Serial.printf("Gas baseline learn %u/%d max=%ld\r\n",
+                  gasLearnCount, GAS_BASELINE_LEARN_SAMPLES, (long)gasBaseline);
+    return false;
+  }
+  if (gas > gasBaseline) {
+    // Cleaner air: raise baseline by 1/8 of the gap, not in one jump.
+    gasBaseline += (gas - gasBaseline) / 8;
+  }
+  return gasBaseline > 0;
+}
+
+int calculateGasScore(int32_t gas) {
+  if (gasBaseline <= 0 || gas <= 0) {
+    return 0;
+  }
+  if (gas >= gasBaseline) {
+    return GAS_SCORE_MAX;
+  }
+  // Below ~20% of baseline: 0 points.
+  if (gas * 5L < gasBaseline) {
+    return 0;
+  }
+  // Integer ratio gas/baseline scaled to 0..GAS_SCORE_MAX, rounded.
+  return (int)((gas * (int32_t)GAS_SCORE_MAX + gasBaseline / 2) / gasBaseline);
+}
 
 int calculateHumidityScore(float currentHumidity) {
   int humidity = (int)currentHumidity;
@@ -111,17 +163,40 @@ int calculateCo2Score(int32_t co2Ppm) {
   return map(co2Ppm, CO2_GOOD_PPM, CO2_POOR_PPM, CO2_SCORE_MAX, 0);
 }
 
-int combineAirQualityScore(bool hasHumidityMeasurement, int humidityScore, bool hasCo2Measurement, int co2Score) {
-  if (hasHumidityMeasurement && hasCo2Measurement) {
-    return humidityScore + co2Score;
-  }
+int combineAirQualityScore(bool hasHumidityMeasurement, int humidityScore, bool hasCo2Measurement, int co2Score,
+                           bool hasGasMeasurement, int gasScore) {
+  int sum = 0;
+  int maxPossible = 0;
   if (hasHumidityMeasurement) {
-    return humidityScore * 100 / HUM_SCORE_MAX;
+    sum += humidityScore;
+    maxPossible += HUM_SCORE_MAX;
   }
   if (hasCo2Measurement) {
-    return co2Score * 100 / CO2_SCORE_MAX;
+    sum += co2Score;
+    maxPossible += CO2_SCORE_MAX;
   }
-  return 0;
+  if (hasGasMeasurement) {
+    sum += gasScore;
+    maxPossible += GAS_SCORE_MAX;
+  }
+  if (maxPossible == 0) {
+    return 0;
+  }
+  if (maxPossible == 100) {
+    return sum;
+  }
+  return sum * 100 / maxPossible;
+}
+
+// 0–33 red, 34–66 yellow, 67–100 green.
+uint32_t colorForAirQuality(int score) {
+  if (score <= 33) {
+    return COLOR_AQI_RED;
+  }
+  if (score <= 66) {
+    return COLOR_AQI_YELLOW;
+  }
+  return COLOR_AQI_GREEN;
 }
 
 void putUint16(uint8_t offset, uint16_t value) {
@@ -137,19 +212,22 @@ bool powerSensorsOn() {
     // SCD30 accepts I2C commands about 2 s after power-up.
     delay(2000);
   }
+  // CubeCell: after Vext cycles, I2C_Stop before Wire.begin()/I2C_Start is needed.
+  I2C_Stop();
   Wire.begin();
   return needsColdStart;
 }
 
-// Bus zu und Versorgung aus. Das nächste Einschalten ist ein Kaltstart.
+// Bus off and power cut. The next power-on is a cold start.
 void cutSensorPower() {
   Wire.end();
   digitalWrite(Vext, HIGH);
   LoRaWAN.holdVext(false);
   sensorsStayOn = false;
+  resetGasBaseline();
 }
 
-// Bus zu. keepPowered lässt die Versorgung für den nächsten warmen Zyklus an.
+// Bus off. keepPowered leaves the rail on for the next warm cycle.
 void parkSensors(bool keepPowered) {
   Wire.end();
   if (keepPowered) {
@@ -214,6 +292,7 @@ bool readBme680(int32_t &temperature, int32_t &humidity, int32_t &pressure, int3
     int32_t sampleHumidity = 0;
     int32_t samplePressure = 0;
     int32_t sampleGas = 0;
+    Serial.printf("BME680: wait %d/%d\r\n", i + 1, cycles);
     BME680.getSensorData(sampleTemperature, sampleHumidity, samplePressure, sampleGas, true);
     Serial.printf("BME680 %d/%d: T=%ld.%02ld C H=%ld.%03ld %% P=%ld.%02ld hPa Gas=%ld ohm\r\n",
                   i + 1, cycles,
@@ -331,7 +410,7 @@ void prepareTxFrame(uint8_t port) {
   mainsConnected = digitalRead(GPIO3) == HIGH;
   attachInterrupt(WAKE_UP_PIN, onWakeUp, RISING);
 
-  // Debug: die LED ist auch auf Batterie an, solange der Knoten wach ist.
+  // Debug: LED stays on while awake, including on battery.
   LoRaWAN.enableRgb();
 
   int32_t temperature1 = 0;
@@ -345,10 +424,13 @@ void prepareTxFrame(uint8_t port) {
   uint8_t scdStatus = 0;
 
   appTxDutyCycle = mainsConnected ? MAINS_TX_DUTY_MS : BATTERY_TX_DUTY_MS;
- 
+  if (!mainsConnected) {
+    resetGasBaseline();
+  }
+
   Serial.printf("Measure uptime=%u battery=%u mV mains=%u interval=%lu s\r\n",
                 uptimeCount, batteryVoltage, mainsConnected ? 1 : 0, (unsigned long)(appTxDutyCycle / 1000));
-  
+
   // RGB and I2C share GPIO port 0. Lighting the LED writes the whole port, so do it before Wire.begin().
   if (LoRaWAN.isRgbEnabled()) {
     turnOnRGB(COLOR_MEASURE, 0);
@@ -383,11 +465,15 @@ void prepareTxFrame(uint8_t port) {
       scdStatus = readScd30(co2, temperature2, humidity2, restartMeasurement);
     }
 
-    // A warm wake whose sensors do not answer means the rail dropped in sleep.
-    if (needsColdStart || attempt == 1 || (bmeStatus == 1 && scdStatus != 0)) {
+    // One retry with a hard power cycle: BME failed, or warm wake with silent sensors (rail dropped).
+    if (attempt == 1 || (bmeStatus == 1 && (needsColdStart || scdStatus != 0))) {
       break;
     }
-    Serial.println(F("Vext im Schlaf aus, Kaltstart"));
+    if (bmeStatus == 0) {
+      Serial.println(F("BME680: fail, cold start"));
+    } else {
+      Serial.println(F("Vext off in sleep, cold start"));
+    }
     cutSensorPower();
     appliedPressureMbar = 0;
     needsColdStart = powerSensorsOn();
@@ -400,13 +486,17 @@ void prepareTxFrame(uint8_t port) {
   int humidityScore = scoreHumidity(bmeStatus, scdStatus, restartMeasurement, humidity1, humidity2);
   bool hasCo2Measurement = scdStatus == 1;
   int co2Score = hasCo2Measurement ? calculateCo2Score(co2) : 0;
-  int airQualityScore = combineAirQualityScore(hasHumidityMeasurement, humidityScore, hasCo2Measurement, co2Score);
-  
-  Serial.printf("AQI humidity=%d/%d co2=%d/%d total=%d status=%u\r\n",
-                humidityScore, HUM_SCORE_MAX, co2Score, CO2_SCORE_MAX, airQualityScore,
-                bmeStatus * 10 + scdStatus);
+  bool hasGasMeasurement = mainsConnected && gas > 0 && updateGasBaseline(gas);
+  int gasScore = hasGasMeasurement ? calculateGasScore(gas) : 0;
+  int airQualityScore = combineAirQualityScore(hasHumidityMeasurement, humidityScore, hasCo2Measurement, co2Score,
+                                              hasGasMeasurement, gasScore);
+  sleepAirQualityScore = (hasHumidityMeasurement || hasCo2Measurement || hasGasMeasurement) ? airQualityScore : -1;
 
-  appDataSize = 24;
+  Serial.printf("AQI humidity=%d/%d co2=%d/%d gas=%d/%d total=%d baseline=%ld status=%u\r\n",
+                humidityScore, HUM_SCORE_MAX, co2Score, CO2_SCORE_MAX, gasScore, GAS_SCORE_MAX,
+                airQualityScore, (long)gasBaseline, bmeStatus * 10 + scdStatus);
+
+  appDataSize = 26;
   putUint16(0, uptimeCount);
   putUint16(2, batteryVoltage);
   putUint16(4, temperature1);
@@ -422,28 +512,36 @@ void prepareTxFrame(uint8_t port) {
   putUint16(20, co2);
   appData[22] = bmeStatus * 10 + scdStatus;
   appData[23] = mainsConnected ? 1 : 0;
+  putUint16(24, round(gasBaseline / 10));
 
-  Serial.printf("TX T1=%ld T2=%ld H1=%ld H2=%ld P=%ld Gas=%ld CO2=%ld AQI=%d Bat=%u St=%u Mains=%u\r\n",
+  Serial.printf("TX T1=%ld T2=%ld H1=%ld H2=%ld P=%ld Gas=%ld Base=%ld CO2=%ld AQI=%d Bat=%u St=%u Mains=%u\r\n",
                 (long)temperature1, (long)temperature2, (long)humidity1, (long)humidity2,
-                (long)pressure, (long)gas, (long)co2, airQualityScore, batteryVoltage,
+                (long)pressure, (long)gas, (long)gasBaseline, (long)co2, airQualityScore, batteryVoltage,
                 appData[22], appData[23]);
 
   uptimeCount++;
 }
 
+void showSleepAirQuality() {
+  if (!mainsConnected || sleepAirQualityScore < 0) {
+    return;
+  }
+  turnOnRGB(colorForAirQuality(sleepAirQualityScore), 0);
+}
+
+// Once before deep sleep, after the core has driven Vext low again.
+extern "C" void onEnterLowPower(void) {
+  showSleepAirQuality();
+}
+
 void prepareBeforeSleep() {
   if (mainsConnected) {
-    // turnOffRGB clears the pixel. holdVext leaves the rail on.
     LoRaWAN.holdVext(true);
-    LoRaWAN.enableRgb();
-    turnOffRGB();
-    Serial.println(F("Schlaf: Vext bleibt an"));
+    Serial.println(F("Sleep: Vext stays on"));
   } else {
     LoRaWAN.holdVext(false);
-    LoRaWAN.enableRgb();
-    turnOffRGB();
     digitalWrite(Vext, HIGH);
-    Serial.println(F("Schlaf: Vext aus"));
+    Serial.println(F("Sleep: Vext turned off"));
   }
   delay(50);
 }
@@ -455,7 +553,7 @@ void onWakeUp() {
 }
 
 void showBootColors() {
-  // Nur beim Start. 4 × 400 ms, danach aus. Der Join setzt seine eigenen Farben.
+  // Startup only. 4 × 400 ms, then off. Join sets its own colors.
   turnOnRGB(COLOR_SEND, 400);
   turnOnRGB(COLOR_RXWINDOW2, 400);
   turnOnRGB(COLOR_RECEIVED, 400);
