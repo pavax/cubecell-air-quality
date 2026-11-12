@@ -21,8 +21,22 @@ $SketchPath = if ($Sketch) {
 $BuildName = if ($Sketch) { 'build-' + (Split-Path $SketchPath -Leaf) } else { 'build' }
 $Build = Join-Path $Root $BuildName
 
-# HTCC-AB01, EU868, Class A, OTAA, ADR on, unconfirmed uplinks, AT commands on, RGB active.
-$Fqbn = 'CubeCell:CubeCell-Arduino:CubeCell-Board:LORAWAN_REGION=6,LORAWAN_CLASS=0,LORAWAN_DEVEUI=0,LORAWAN_NETMODE=0,LORAWAN_ADR=0,LORAWAN_UPLINKMODE=1,LORAWAN_Net_Reserve=0,LORAWAN_AT_SUPPORT=0,LORAWAN_RGB=1,LORAWAN_PREAMBLE_LENGTH=0,LORAWAN_DebugLevel=0'
+# HTCC-AB01 board options. FQBN values are menu IDs from boards.txt (not 1=on).
+$Board = 'CubeCell:CubeCell-Arduino:CubeCell-Board'
+$BoardOptions = @(
+    'LORAWAN_REGION=6'          # 6=EU868
+    'LORAWAN_CLASS=0'           # 0=Class A, 2=Class C
+    'LORAWAN_DEVEUI=0'          # 0=from credentials.h, 1=from ChipID
+    'LORAWAN_NETMODE=0'         # 0=OTAA, 1=ABP
+    'LORAWAN_ADR=0'             # 0=ON, 1=OFF
+    'LORAWAN_UPLINKMODE=1'      # 0=confirmed, 1=unconfirmed
+    'LORAWAN_Net_Reserve=0'     # 0=OFF, 1=ON (persist session in flash)
+    'LORAWAN_AT_SUPPORT=0'      # 0=ON, 1=OFF
+    'LORAWAN_RGB=1'             # 0=off, 1=on
+    'LORAWAN_PREAMBLE_LENGTH=0' # 0=8 symbols, 1=16 (M00/M00L)
+    'LORAWAN_DebugLevel=0'      # 0=none, 1=freq, 2=freq+DIO
+)
+$Fqbn = $Board + ':' + ($BoardOptions -join ',')
 
 function Get-UploadPort {
     $localFile = Join-Path $Root 'cubecell.local.json'
