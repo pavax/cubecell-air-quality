@@ -26,7 +26,7 @@ $Board = 'CubeCell:CubeCell-Arduino:CubeCell-Board'
 $BoardOptions = @(
     'LORAWAN_REGION=6'          # 6=EU868
     'LORAWAN_CLASS=0'           # 0=Class A, 2=Class C
-    'LORAWAN_DEVEUI=0'          # 0=from credentials.h, 1=from ChipID
+    'LORAWAN_DEVEUI=1'          # 0=from credentials.h, 1=from ChipID
     'LORAWAN_NETMODE=0'         # 0=OTAA, 1=ABP
     'LORAWAN_ADR=0'             # 0=ON, 1=OFF
     'LORAWAN_UPLINKMODE=1'      # 0=confirmed, 1=unconfirmed
