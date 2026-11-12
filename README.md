@@ -10,7 +10,7 @@ Ob der Knoten im **Netzbetrieb** oder im **Batteriebetrieb** läuft, erkennt die
 2. Modus wählen: Intervall, Gas-Heizer, RGB.
 3. Mess-LED setzen, bevor die Sensoren angesprochen werden. Die RGB-LED teilt sich den Port mit dem Sensorbus; die Farbe muss deshalb vorher stehen.
 4. Sensoren messen, Paket senden.
-5. Schlaf. Im Netzbetrieb bleibt die Sensorversorgung an, und die RGB-LED zeigt die AQI-Farbe. Ohne gültige Messung bleibt die LED aus, die Versorgung aber an. Im Batteriebetrieb sind LED und Sensorversorgung aus. Antwortet ein Sensor beim nächsten Aufwachen nicht, war die Spannung doch weg und der Zyklus startet kalt.
+5. Schlaf. Im Netzbetrieb bleibt die Sensorversorgung an, und die RGB-LED zeigt die AQI-Farbe — aber nur wenn mindestens ein Sensor gültig geantwortet hat. Sind beide tot, bleibt die LED aus und die Versorgung wird ausgeschaltet, damit der nächste Zyklus kalt startet. Im Batteriebetrieb sind LED und Sensorversorgung aus.
 
 Der erste Start zählt als Kaltstart: die Sensorversorgung war aus, der SCD30 wird neu gestartet, die erste SCD30-Messung und die erste BME680-Messung nach dem Einschalten werden verworfen. Beim Start zeigt die LED kurz Rot, Gelb, Grün und Blau, danach aus. Während des LoRaWAN-Beitritts setzt die Plattform die Farben selbst.
 
@@ -35,9 +35,9 @@ Abstand zwischen zwei Sendungen: **5 Minuten**.
 
 | | während der Messung | im Schlaf |
 |---|---|---|
-| Sensorversorgung | an | an |
-| SCD30 | an, Messung läuft über den Schlaf weiter | an |
-| BME680 | an, Gas-Heizer 320 °C / 150 ms, bis zu 5 Zyklen | an, Heizer aus |
+| Sensorversorgung | an | an, aus wenn beide Sensoren tot |
+| SCD30 | an, Messung läuft über den Schlaf weiter | an, aus wenn beide tot |
+| BME680 | an, Gas-Heizer 320 °C / 150 ms, bis zu 5 Zyklen | an (Heizer aus), aus wenn beide tot |
 | RGB | an | AQI-Farbe, aus ohne Messung |
 
 Die Druckkompensation des SCD30 kommt vom BME680 (700–1200 mbar). Beim BME680 wird immer die erste Messung verworfen, die letzte plausible bleibt. Beim SCD30 wird die erste Messung nur nach einem Kaltstart verworfen. Lief die Messung durch den Schlaf weiter, gehen beide Luftfeuchtigkeitswerte in den AQI ein.
@@ -101,5 +101,5 @@ Dieser Stand macht vier Dinge:
 
 - Das I2C-Timeout ist länger, sonst antwortet der SCD30 nicht.
 - Nach dem Einschalten der Sensorversorgung wartet die RGB-Ansteuerung kurz.
-- Im Netzbetrieb bleibt die Sensorversorgung im Tiefschlaf an. Vor dem Schlafen wird die AQI-Farbe gesetzt. Nach dem Aufwachen bleibt die Versorgung an, ohne die Farbe erneut zu setzen.
-- Die BME680-Warte-Schleife hat ein Timeout von 3 s. Ohne das blieb die Mess-LED dauerhaft Cyan, wenn der Sensor im Measuring-Bit hing. Nach einem BME-Fehler folgt ein Kaltstart-Retry.
+- Im Netzbetrieb bleibt die Sensorversorgung im Tiefschlaf an, außer beide Sensoren waren tot. Vor dem Schlafen wird die AQI-Farbe gesetzt. Nach dem Aufwachen bleibt die Versorgung an, ohne die Farbe erneut zu setzen.
+- Die BME680-Warte-Schleife hat ein Timeout von 3 s. Ohne das blieb die Mess-LED dauerhaft Cyan, wenn der Sensor im Measuring-Bit hing. Fehlt oder timeoutet ein Sensor, folgen bis zu zwei Power-Cycle-Retries (Versorgung erst ~4 s, dann ~8 s aus, jeweils mit Kaltstart). Bleiben beide tot, bleibt die Versorgung bis zum nächsten Zyklus aus.

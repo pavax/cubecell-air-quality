@@ -33,8 +33,23 @@
         "-Action",
         "upload"
       ],
-      "dependsOn": "CubeCell: Build",
       "problemMatcher": []
+    },
+    {
+      "label": "CubeCell: Build & Upload",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/cubecell.ps1",
+        "-Action",
+        "flash"
+      ],
+      "group": "build",
+      "problemMatcher": "$gcc"
     },
     {
       "label": "CubeCell: Serial monitor",

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('build', 'upload', 'monitor')]
+    [ValidateSet('build', 'upload', 'flash', 'monitor')]
     [string]$Action,
     [string]$Sketch = ''
 )
@@ -59,16 +59,31 @@ if (-not (Test-Path $Cli)) {
     throw "arduino-cli was not found at $Cli"
 }
 
-switch ($Action) {
-    'build' {
-        & $Cli compile --config-file $Config --fqbn $Fqbn --build-path $Build $SketchPath
+function Invoke-Build {
+    & $Cli compile --config-file $Config --fqbn $Fqbn --build-path $Build $SketchPath
+    if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
+}
+
+function Invoke-Upload {
+    $port = Get-UploadPort
+    Write-Host "Uploading to $port"
+    & $Cli upload --config-file $Config --fqbn $Fqbn --port $port --input-dir $Build $SketchPath
+    exit $LASTEXITCODE
+}
+
+switch ($Action) {
+    'build' {
+        Invoke-Build
+        exit 0
+    }
     'upload' {
-        $port = Get-UploadPort
-        Write-Host "Uploading to $port"
-        & $Cli upload --config-file $Config --fqbn $Fqbn --port $port --input-dir $Build $SketchPath
-        exit $LASTEXITCODE
+        Invoke-Upload
+    }
+    'flash' {
+        Invoke-Build
+        Invoke-Upload
     }
     'monitor' {
         $port = Get-UploadPort

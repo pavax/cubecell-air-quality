@@ -22,6 +22,8 @@ SCD30 airSensor;
 #define PRESSURE_CHANGE_THRESHOLD_MBAR 10
 #define SCD30_PRESSURE_MIN_MBAR 700
 #define SCD30_PRESSURE_MAX_MBAR 1200
+#define SENSOR_POWER_OFF_MS 4000
+#define SENSOR_ATTEMPTS 3
 
 #define HUM_COMFORT_MIN 30
 #define HUM_COMFORT_MAX 60
@@ -76,7 +78,7 @@ static bool mainsConnected = false;
 static volatile bool accelWoke = false;
 static bool recalibrateDuty = false;
 static uint16_t appliedPressureMbar = 0;
-static bool sensorsStayOn = false;
+static bool keepSensorsPoweredOn = false;
 static int32_t gasBaseline = 0;
 static uint8_t gasLearnCount = 0;
 // -1: no valid AQI component. Otherwise AQI from 0 to 100.
@@ -98,8 +100,8 @@ bool updateGasBaseline(int32_t gas) {
       gasBaseline = gas;
     }
     gasLearnCount++;
-    Serial.printf("Gas baseline learn %u/%d max=%ld\r\n",
-                  gasLearnCount, GAS_BASELINE_LEARN_SAMPLES, (long)gasBaseline);
+    Serial.printf("Gas: learning %u/%d, reading=%ld ohm, baseline=%ld ohm (not scored yet)\r\n",
+                  gasLearnCount, GAS_BASELINE_LEARN_SAMPLES, (long)gas, (long)gasBaseline);
     return false;
   }
   if (gas > gasBaseline) {
@@ -206,11 +208,11 @@ void putUint16(uint8_t offset, uint16_t value) {
 
 bool powerSensorsOn() {
   // The LoRaWAN stack may drive Vext during join, so the pin level is not our power state.
-  bool needsColdStart = !sensorsStayOn;
+  bool needsColdStart = !keepSensorsPoweredOn;
   digitalWrite(Vext, LOW);
   if (needsColdStart) {
-    // SCD30 accepts I2C commands about 2 s after power-up.
-    delay(2000);
+    // SCD30 accepts I2C commands about 3 s after power-up.
+    delay(3000);
   }
   // CubeCell: after Vext cycles, I2C_Stop before Wire.begin()/I2C_Start is needed.
   I2C_Stop();
@@ -223,7 +225,7 @@ void cutSensorPower() {
   Wire.end();
   digitalWrite(Vext, HIGH);
   LoRaWAN.holdVext(false);
-  sensorsStayOn = false;
+  keepSensorsPoweredOn = false;
   resetGasBaseline();
 }
 
@@ -233,20 +235,17 @@ void parkSensors(bool keepPowered) {
   if (keepPowered) {
     digitalWrite(Vext, LOW);
     LoRaWAN.holdVext(true);
-    sensorsStayOn = true;
+    keepSensorsPoweredOn = true;
     return;
   }
   digitalWrite(Vext, HIGH);
   LoRaWAN.holdVext(false);
-  sensorsStayOn = false;
+  keepSensorsPoweredOn = false;
   appliedPressureMbar = 0;
 }
 
-// Pascals to mbar. 0 when there is no reading. Outside 700–1200 mbar the value is clamped.
-uint16_t toPressureMbar(int32_t pressurePa, bool havePressure) {
-  if (!havePressure) {
-    return 0;
-  }
+// Pascals to mbar. Outside 700–1200 mbar the value is clamped.
+uint16_t toPressureMbar(int32_t pressurePa) {
   int32_t pressureMbar = pressurePa / 100;
   if (pressureMbar < SCD30_PRESSURE_MIN_MBAR) {
     return SCD30_PRESSURE_MIN_MBAR;
@@ -284,7 +283,7 @@ bool initBme680(bool heatGas) {
 }
 
 bool readBme680(int32_t &temperature, int32_t &humidity, int32_t &pressure, int32_t &gas, bool heatGas) {
-  bool haveReading = false;
+  bool haveReading = false; 
   int cycles = heatGas ? BME_CYCLES_FOR_GAS_READINGS : BME_CYCLES_NORMAL;
   gas = 0;
   for (int i = 0; i < cycles; i++) {
@@ -320,14 +319,6 @@ bool readBme680(int32_t &temperature, int32_t &humidity, int32_t &pressure, int3
   return haveReading;
 }
 
-bool connectScd30(uint16_t pressureMbar) {
-  if (startScd30(pressureMbar)) {
-    return true;
-  }
-  delay(1000);
-  return startScd30(pressureMbar);
-}
-
 // Connect only. SparkFun begin(measBegin=true) starts a measurement and then
 // changes the interval, which the SCD30 ignores unless measurement is stopped.
 bool attachScd30() {
@@ -338,7 +329,7 @@ bool attachScd30() {
   return true;
 }
 
-bool startScd30(uint16_t pressureMbar) {
+bool initScd30(uint16_t pressureMbar) {
   Serial.printf("SCD30: connect, pressure=%u mbar\r\n", pressureMbar);
   if (!attachScd30()) {
     Wire.beginTransmission(SCD30_ADDRESS);
@@ -437,50 +428,50 @@ void prepareTxFrame(uint8_t port) {
   }
   bool needsColdStart = powerSensorsOn();
   bool restartMeasurement;
-  for (int attempt = 0; attempt < 2; attempt++) {
+  for (int attempt = 0; attempt < SENSOR_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      unsigned long powerOffMs = (unsigned long)SENSOR_POWER_OFF_MS * attempt;
+      Serial.printf("Sensors: fail, power cycle %lu ms\r\n", powerOffMs);
+      cutSensorPower();
+      delay(powerOffMs);
+      appliedPressureMbar = 0;
+      needsColdStart = powerSensorsOn();
+    }
+
     bmeStatus = 0;
     scdStatus = 0;
     if (initBme680(mainsConnected) && readBme680(temperature1, humidity1, pressure, gas, mainsConnected)) {
       bmeStatus = 1;
     }
 
-    uint16_t pressureMbar = toPressureMbar(pressure, bmeStatus == 1);
+    uint16_t pressureMbar = bmeStatus == 1 ? toPressureMbar(pressure) : 0;
     bool pressureChanged = hasPressureSignificantlyChanged(pressureMbar);
 
     restartMeasurement = needsColdStart || pressureChanged;
-    bool scdReady = false;
-    if (!needsColdStart) {
+    bool scdReady;
+    if (restartMeasurement) {
+      scdReady = initScd30(pressureMbar);
+      if (scdReady) {
+        appliedPressureMbar = pressureMbar;
+      }
+    } else {
       scdReady = attachScd30();
     }
-    if (restartMeasurement) {
-      scdReady = connectScd30(pressureMbar);
-    }
-    if (scdReady && pressureMbar != 0) {
-      appliedPressureMbar = pressureMbar;
-    }
-    if (scdReady && recalibrateDuty) {
-      calibrateScd30();
-    }
     if (scdReady) {
+      if (recalibrateDuty) {
+        calibrateScd30();
+      }
       scdStatus = readScd30(co2, temperature2, humidity2, restartMeasurement);
     }
 
-    // One retry with a hard power cycle: BME failed, or warm wake with silent sensors (rail dropped).
-    if (attempt == 1 || (bmeStatus == 1 && (needsColdStart || scdStatus != 0))) {
+    if (bmeStatus == 1 && scdStatus == 1) {
       break;
     }
-    if (bmeStatus == 0) {
-      Serial.println(F("BME680: fail, cold start"));
-    } else {
-      Serial.println(F("Vext off in sleep, cold start"));
-    }
-    cutSensorPower();
-    appliedPressureMbar = 0;
-    needsColdStart = powerSensorsOn();
   }
 
-  // Mains keeps the rail on so the next wake can continue the SCD30 measurement.
-  parkSensors(mainsConnected);
+  // Mains keeps the rail on only when at least one sensor answered; otherwise force a cold start next cycle.
+  bool keepPowered = mainsConnected && (bmeStatus == 1 || scdStatus == 1);
+  parkSensors(keepPowered);
 
   bool hasHumidityMeasurement = bmeStatus == 1 || scdStatus == 1;
   int humidityScore = scoreHumidity(bmeStatus, scdStatus, restartMeasurement, humidity1, humidity2);
@@ -514,8 +505,8 @@ void prepareTxFrame(uint8_t port) {
   appData[23] = mainsConnected ? 1 : 0;
   putUint16(24, round(gasBaseline / 10));
 
-  Serial.printf("TX T1=%ld T2=%ld H1=%ld H2=%ld P=%ld Gas=%ld Base=%ld CO2=%ld AQI=%d Bat=%u St=%u Mains=%u\r\n",
-                (long)temperature1, (long)temperature2, (long)humidity1, (long)humidity2,
+  Serial.printf("TX #%u T1=%ld T2=%ld H1=%ld H2=%ld P=%ld Gas=%ld Base=%ld CO2=%ld AQI=%d Bat=%u St=%u Mains=%u\r\n",
+                uptimeCount, (long)temperature1, (long)temperature2, (long)humidity1, (long)humidity2,
                 (long)pressure, (long)gas, (long)gasBaseline, (long)co2, airQualityScore, batteryVoltage,
                 appData[22], appData[23]);
 
@@ -535,7 +526,7 @@ extern "C" void onEnterLowPower(void) {
 }
 
 void prepareBeforeSleep() {
-  if (mainsConnected) {
+  if (keepSensorsPoweredOn) {
     LoRaWAN.holdVext(true);
     Serial.println(F("Sleep: Vext stays on"));
   } else {
