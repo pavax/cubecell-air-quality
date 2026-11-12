@@ -24,6 +24,7 @@ SCD30 airSensor;
 #define SCD30_PRESSURE_MAX_MBAR 1200
 #define SENSOR_POWER_OFF_MS 4000
 #define SENSOR_ATTEMPTS 3
+#define CYCLE_WATCHDOG_MAX_MS (1000UL * 60 * 60 * 2)
 
 #define HUM_COMFORT_MIN 30
 #define HUM_COMFORT_MAX 60
@@ -83,7 +84,21 @@ static int32_t gasBaseline = 0;
 static uint8_t gasLearnCount = 0;
 // -1: no valid AQI component. Otherwise AQI from 0 to 100.
 static int sleepAirQualityScore = -1;
-void onWakeUp();
+
+static TimerEvent_t cycleWatchdogTimer;
+
+void onCycleTimeoutWatchdog() {
+  Serial.println(F("Watchdog: Cycle Timed Out"));
+  delay(100);
+  HW_Reset(0);
+}
+
+void resetCycleWatchdog() {
+  Serial.println(F("Watchdog: reset"));
+  TimerStop(&cycleWatchdogTimer);
+  TimerSetValue(&cycleWatchdogTimer, CYCLE_WATCHDOG_MAX_MS);
+  TimerStart(&cycleWatchdogTimer);
+}
 
 void resetGasBaseline() {
   gasBaseline = 0;
@@ -396,6 +411,9 @@ uint8_t readScd30(int32_t &co2, int32_t &temperature, int32_t &humidity, bool di
 void prepareTxFrame(uint8_t port) {
   (void)port;
 
+  // Arm before sensors: a hang in measure still trips reset within 6h.
+  resetCycleWatchdog();
+
   detachInterrupt(WAKE_UP_PIN);
   batteryVoltage = getBatteryVoltage();
   mainsConnected = digitalRead(GPIO3) == HIGH;
@@ -573,6 +591,8 @@ void setup() {
   accelWoke = false;
   pinMode(WAKE_UP_PIN, INPUT_PULLUP);
   attachInterrupt(WAKE_UP_PIN, onWakeUp, RISING);
+
+  TimerInit(&cycleWatchdogTimer, onCycleTimeoutWatchdog);
 }
 
 void loop() {

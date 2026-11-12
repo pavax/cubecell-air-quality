@@ -16,6 +16,8 @@ Der erste Start zählt als Kaltstart: die Sensorversorgung war aus, der SCD30 wi
 
 Der User-Button weckt den Knoten sofort und schaltet die LED für genau diesen Zyklus ein. Danach gilt wieder die erkannte Betriebsart.
 
+Ein Soft-Watchdog wird zu Beginn jedes Messzyklus (`prepareTxFrame`) auf **6 Stunden** gesetzt. Läuft in der Zeit kein neuer Zyklus an — z. B. weil die Messung hängt — setzt die Firmware den Knoten zurück (`HW_Reset`). Er hängt amselben RTC-Timer wie der Sendetakt und hilft daher nicht, wenn der MCU im Deep Sleep steckt und gar nicht mehr aufwacht.
+
 ## Batteriebetrieb
 
 Abstand zwischen zwei Sendungen: **30 Minuten**.

@@ -36,7 +36,7 @@
       "problemMatcher": []
     },
     {
-      "label": "CubeCell: Build & Upload",
+      "label": "CubeCell: Build & Upload & Serial",
       "type": "shell",
       "command": "powershell",
       "args": [

@@ -70,6 +70,15 @@ function Invoke-Upload {
     $port = Get-UploadPort
     Write-Host "Uploading to $port"
     & $Cli upload --config-file $Config --fqbn $Fqbn --port $port --input-dir $Build $SketchPath
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
+function Invoke-Monitor {
+    $port = Get-UploadPort
+    Write-Host "Serial monitor on $port at 115200 baud"
+    & $Cli monitor --config-file $Config --port $port --config baudrate=115200
     exit $LASTEXITCODE
 }
 
@@ -80,15 +89,16 @@ switch ($Action) {
     }
     'upload' {
         Invoke-Upload
+        exit 0
     }
     'flash' {
         Invoke-Build
         Invoke-Upload
+        # Port comes back after reboot; give the board a moment.
+        Start-Sleep -Seconds 2
+        Invoke-Monitor
     }
     'monitor' {
-        $port = Get-UploadPort
-        Write-Host "Serial monitor on $port at 115200 baud"
-        & $Cli monitor --config-file $Config --port $port --config baudrate=115200
-        exit $LASTEXITCODE
+        Invoke-Monitor
     }
 }
