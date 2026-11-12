@@ -9,6 +9,10 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Cli = Join-Path $env:LOCALAPPDATA 'Programs\arduino-cli\arduino-cli.exe'
 $Config = Join-Path $Root 'arduino-cli.yaml'
+$ArduinoHome = Join-Path $env:LOCALAPPDATA 'arduino-cli-cubecell'
+$env:ARDUINO_DIRECTORIES_DATA = $ArduinoHome
+$env:ARDUINO_DIRECTORIES_DOWNLOADS = Join-Path $ArduinoHome 'staging'
+$env:ARDUINO_DIRECTORIES_USER = Join-Path $ArduinoHome 'sketchbook'
 $SketchPath = if ($Sketch) {
     if ([System.IO.Path]::IsPathRooted($Sketch)) { $Sketch } else { Join-Path $Root $Sketch }
 } else {
