@@ -84,16 +84,18 @@ Der Gaswert bleibt zusätzlich roh im Paket. Die beheizte Metalloxid-Schicht des
 
 Byte 22 ist `bme * 10 + scd`. `1` ist gültig, `0` fehlt, `9` ist ein SCD30-Timeout. `11` heißt also beide gültig, `19` heißt BME gültig und SCD30 im Timeout. Byte 23 ist `1` im Netzbetrieb und `0` im Batteriebetrieb.
 
+Ein Beispiel-Decoder für The Things Stack / ChirpStack liegt unter [`examples/payload_decoder.js`](examples/payload_decoder.js) (`decodeUplink` / `Decoder`, plus optionales `encodeDownlink` für Port 4/5/9).
+
 ## Downlink und Kalibrierung
 
-| Port | Inhalt |
-|---|---|
-| 2 | Uplink, 26 Bytes |
-| 4 | Intervall in Sekunden, gilt bis zur nächsten Messung |
-| 5 | SCD30 bei der nächsten Messung auf 400 ppm kalibrieren, nach 120 s Dauerbetrieb |
-| 9 | Reset |
+| Port | Inhalt | Beispiel (Hex) |
+|---|---|---|
+| 2 | Uplink, 26 Bytes | — |
+| 4 | Intervall in Sekunden (uint16, big-endian), gilt bis zur nächsten Messung | `0384` = 900 s (15 min), `0E10` = 3600 s (1 h), `3840` = 14400 s (4 h) |
+| 5 | SCD30 bei der nächsten Messung auf 400 ppm kalibrieren, nach 120 s Dauerbetrieb | `01` (Byteinhalt egal) |
+| 9 | Soft-Reset (`HW_Reset`) | `01` (Byteinhalt egal) |
 
-Dieselbe Kalibrierung startet über den AT-Befehl zur Neukalibrierung. Die automatische Selbstkalibrierung des SCD30 bleibt aus. Eine Kalibrierung ist nur in echter Frischluft sinnvoll.
+Port 4 braucht mindestens zwei Bytes. Port 5 und 9 werten nur den Port aus; ein beliebiges Byte reicht. Dieselbe Kalibrierung startet über den AT-Befehl zur Neukalibrierung. Die automatische Selbstkalibrierung des SCD30 bleibt aus. Eine Kalibrierung ist nur in echter Frischluft sinnvoll.
 
 ## Patches am CubeCell-Core
 
