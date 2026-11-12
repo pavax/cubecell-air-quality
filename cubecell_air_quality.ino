@@ -517,10 +517,12 @@ void showSleepAirQuality() {
   if (!mainsConnected || sleepAirQualityScore < 0) {
     return;
   }
+  // Must run on every deep-sleep entry: MAC turnOffRGB after TX/RX can clear
+  // the LED after an earlier pass. Core turnOnRGB skips delay when vextHoldLow.
   turnOnRGB(colorForAirQuality(sleepAirQualityScore), 0);
 }
 
-// Once before deep sleep, after the core has driven Vext low again.
+// After MAC SEND/RX/ACK LED use, immediately before CySysPmDeepSleep.
 extern "C" void onEnterLowPower(void) {
   showSleepAirQuality();
 }
