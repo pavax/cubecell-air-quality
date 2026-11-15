@@ -9,18 +9,18 @@ Ob der Knoten im **Netzbetrieb** oder im **Batteriebetrieb** läuft, erkennt die
 1. Aufwachen, Batteriespannung lesen, Betriebsart erkennen.
 2. Modus wählen: Intervall, Gas-Heizer, RGB.
 3. Mess-LED setzen, bevor die Sensoren angesprochen werden. Die RGB-LED teilt sich den Port mit dem Sensorbus; die Farbe muss deshalb vorher stehen.
-4. Sensoren messen, Paket senden.
+4. Sensoren messen und das Sendfenster aktualisieren (Mittelwerte/Extrema). Uplink nur, wenn das Sendintervall fällig ist, der User-Button gedrückt wurde oder es der erste Zyklus nach Start/Join ist; sonst nur messen. Im Netzbetrieb bleiben AQI-LED und Gas-Baseline mit jedem Messzyklus aktuell.
 5. Schlaf. Im Netzbetrieb bleibt die Sensorversorgung an, und die RGB-LED zeigt die AQI-Farbe erst nach den LoRaWAN-Statusfarben — aber nur wenn mindestens ein Sensor gültig geantwortet hat. Sind beide tot, bleibt die LED aus und die Versorgung wird ausgeschaltet, damit der nächste Zyklus kalt startet. Im Batteriebetrieb sind LED und Sensorversorgung aus.
 
 Der erste Start zählt als Kaltstart: die Sensorversorgung war aus, der SCD30 wird neu gestartet, die erste SCD30-Messung und die erste BME680-Messung nach dem Einschalten werden verworfen. Beim Start zeigt die LED kurz Rot, Gelb, Grün und Blau, danach aus. Während des LoRaWAN-Beitritts setzt die Plattform die Farben selbst.
 
-Der User-Button weckt den Knoten sofort und schaltet die LED für genau diesen Zyklus ein. Danach gilt wieder die erkannte Betriebsart.
+Der User-Button weckt den Knoten sofort, erzwingt einen Uplink und schaltet die LED für genau diesen Zyklus ein. Danach gilt wieder die erkannte Betriebsart.
 
 Ein Soft-Watchdog wird zu Beginn jedes Messzyklus (`prepareTxFrame`) auf **6 Stunden** gesetzt. Läuft in der Zeit kein neuer Zyklus an — z. B. weil die Messung hängt — setzt die Firmware den Knoten zurück (`HW_Reset`). Er hängt amselben RTC-Timer wie der Sendetakt und hilft daher nicht, wenn der MCU im Deep Sleep steckt und gar nicht mehr aufwacht.
 
 ## Batteriebetrieb
 
-Abstand zwischen zwei Sendungen: **30 Minuten**.
+Zwei Intervalle: **messen** (Default **1 Stunde**) und **senden** (Default **4 Stunden**). Zwischen den Uplinks werden die Messungen im Fenster aggregiert.
 
 | | während der Messung | im Schlaf |
 |---|---|---|
@@ -33,7 +33,7 @@ Die erste SCD30-Messung nach dem Start wird verworfen. Die Luftfeuchtigkeit für
 
 ## Netzbetrieb
 
-Abstand zwischen zwei Sendungen: **5 Minuten**.
+Zwei Intervalle: **messen** (Sleep-Takt, Default **5 Minuten**) und **senden** (Default **1 Stunde**). Zwischen den Uplinks aggregiert die Firmware das Messfenster; die AQI-LED und die Gas-Baseline laufen mit jedem Messzyklus weiter.
 
 | | während der Messung | im Schlaf |
 |---|---|---|
@@ -44,7 +44,7 @@ Abstand zwischen zwei Sendungen: **5 Minuten**.
 
 Die Druckkompensation des SCD30 kommt vom BME680 (700–1200 mbar). Beim BME680 wird immer die erste Messung verworfen, die letzte plausible bleibt. Beim SCD30 wird die erste Messung nur nach einem Kaltstart verworfen. Lief die Messung durch den Schlaf weiter, gehen beide Luftfeuchtigkeitswerte in den AQI ein.
 
-Port 4 setzt beide Intervalle dauerhaft (EEPROM). Ohne gespeicherte Werte gelten die Defaults: 30 Minuten im Batteriebetrieb, 5 Minuten im Netzbetrieb.
+Port 4 setzt die vier Intervalle dauerhaft (EEPROM). Ohne gespeicherte Werte: Batterie messen 1 h / senden 4 h; Netz messen 5 min / senden 1 h.
 
 ## Luftqualität
 
@@ -64,23 +64,23 @@ Der Gaswert bleibt zusätzlich roh im Paket. Die beheizte Metalloxid-Schicht des
 
 ## Paket
 
-26 Bytes, Port 2, big-endian. Die Temperaturen sind vorzeichenbehaftet zu lesen. Die Beispielspalte ist eine Messung im Netzbetrieb nach der Gas-Lernphase. Der AQI darin ist die Punktzahl für diese Sensorwerte: 48 % Luftfeuchtigkeit liegen im vollen Band (25 Punkte), 1639 ppm CO2 ergeben 16 Punkte, Gas auf Baseline-Niveau ergibt 25 Punkte.
+26 Bytes, Port 2, big-endian. Die Temperaturen sind vorzeichenbehaftet zu lesen. Seit dem letzten Uplink aggregiert die Firmware das Messfenster; nach dem Senden wird es geleert. Die Beispielspalte ist eine Messung im Netzbetrieb nach der Gas-Lernphase.
 
-| Bytes | Wert | Beispiel | bedeutet |
-|---|---|---|---|
-| 0–1 | Zähler | 2 | zweite Sendung |
-| 2–3 | Batterie, mV | 4234 | 4,234 V |
-| 4–5 | BME-Temperatur, 0,01 °C | 2506 | 25,06 °C |
-| 6–7 | SCD-Temperatur, 0,01 °C | 2420 | 24,20 °C |
-| 8–9 | BME-Luftfeuchtigkeit, 0,01 % | 4846 | 48,46 % |
-| 10–11 | SCD-Luftfeuchtigkeit, 0,01 % | 4781 | 47,81 % |
-| 12–15 | Druck, Pa | 95647 | 956,47 hPa |
-| 16–17 | Gas, Ω/10 | 18664 | 186640 Ω |
-| 18–19 | AQI | 66 | 25 Punkte Luftfeuchtigkeit plus 16 Punkte CO2 plus 25 Punkte Gas |
-| 20–21 | CO2, ppm | 1639 | 1639 ppm |
-| 22 | Status | 11 | BME und SCD beide gültig |
-| 23 | Betriebsart | 1 | Netzbetrieb |
-| 24–25 | Gas-Baseline, Ω/10 | 18664 | 186640 Ω |
+| Bytes | Wert | Fenster | Beispiel | bedeutet |
+|---|---|---|---|---|
+| 0–1 | Zähler | nur Uplink | 2 | zweite Sendung |
+| 2–3 | Batterie, mV | letzter Wert | 4234 | 4,234 V |
+| 4–5 | BME-Temperatur, 0,01 °C | Mittelwert | 2506 | 25,06 °C |
+| 6–7 | SCD-Temperatur, 0,01 °C | Mittelwert | 2420 | 24,20 °C |
+| 8–9 | BME-Luftfeuchtigkeit, 0,01 % | Zyklus mit schlechtestem Humidity-Score | 4846 | 48,46 % |
+| 10–11 | SCD-Luftfeuchtigkeit, 0,01 % | derselbe Zyklus | 4781 | 47,81 % |
+| 12–15 | Druck, Pa | Mittelwert | 95647 | 956,47 hPa |
+| 16–17 | Gas, Ω/10 | Minimum | 18664 | 186640 Ω |
+| 18–19 | AQI | Minimum | 66 | schlechtester Zyklen-Score im Fenster |
+| 20–21 | CO2, ppm | Maximum | 1639 | 1639 ppm |
+| 22 | Status | aktuell | 11 | BME und SCD beide gültig |
+| 23 | Betriebsart | aktuell | 1 | Netzbetrieb |
+| 24–25 | Gas-Baseline, Ω/10 | aktuell | 18664 | 186640 Ω |
 
 Byte 22 ist `bme * 10 + scd`. `1` ist gültig, `0` fehlt, `9` ist ein SCD30-Timeout. `11` heißt also beide gültig, `19` heißt BME gültig und SCD30 im Timeout. Byte 23 ist `1` im Netzbetrieb und `0` im Batteriebetrieb.
 
@@ -91,28 +91,18 @@ Ein Beispiel-Decoder für The Things Stack / ChirpStack liegt unter [`examples/p
 | Port | Inhalt | Beispiel (Hex) |
 |---|---|---|
 | 2 | Uplink, 26 Bytes | — |
-| 4 | Batterie- und Netz-Intervall in Sekunden (je uint16, big-endian), persistent im EEPROM | siehe Beispiele unten |
+| 4 | Intervalle in Sekunden (uint16, big-endian), persistent im EEPROM | siehe Beispiele unten |
 | 5 | SCD30 bei der nächsten Messung auf 400 ppm kalibrieren, nach 120 s Dauerbetrieb | `01` (Byteinhalt egal) |
 | 9 | Soft-Reset (`HW_Reset`) | `01` (Byteinhalt egal) |
 
-Port 4 braucht vier Bytes: Bytes 0–1 Batterie, Bytes 2–3 Netz. `0` in einem der beiden Werte wird verworfen.
-
-| Intervall | Sekunden | Hex (uint16) |
-|---|---|---|
-| 30 min | 1800 | `0708` |
-| 1 h | 3600 | `0E10` |
-| 4 h | 14400 | `3840` |
-| 6 h | 21600 | `5460` |
-
-Beispiele (Batterie + Netz):
+Port 4, **8 Bytes:** `battery_mode_measure_interval_s` + `battery_mode_tx_interval_s` + `mains_mode_measure_interval_s` + `mains_mode_tx_interval_s`. Ist `tx` kleiner als `measure` (je Modus), wird es auf das Messintervall angehoben. `0` in einem Wert wird verworfen.
 
 | Bedeutung | Hex |
 |---|---|
-| Batterie 30 min, Netz 30 min | `07080708` |
-| Batterie 1 h, Netz 30 min | `0E100708` |
-| Batterie 4 h, Netz 1 h | `38400E10` |
-| Batterie 6 h, Netz 1 h | `54600E10` |
-| Batterie 6 h, Netz 4 h | `54603840` |
+| Batterie 1 h / 4 h, Netz 5 min / 1 h (Defaults) | `0E103840012C0E10` |
+| Batterie 1 h / 1 h, Netz 5 min / 1 h | `0E100E10012C0E10` |
+| Batterie 2 h / 4 h, Netz 10 min / 1 h | `1C20384002580E10` |
+| Batterie 6 h / 6 h, Netz 30 min / 1 h | `5460546007080E10` |
 
 Port 5 und 9 werten nur den Port aus; ein beliebiges Byte reicht. Dieselbe Kalibrierung startet über den AT-Befehl zur Neukalibrierung. Die automatische Selbstkalibrierung des SCD30 bleibt aus. Eine Kalibrierung ist nur in echter Frischluft sinnvoll.
 

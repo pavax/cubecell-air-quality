@@ -4,6 +4,11 @@
  * Drop-in for The Things Stack / ChirpStack v4 (`decodeUplink`).
  * Older stacks: use `Decoder(bytes, port)` below the same way.
  *
+ * Numeric sensor fields are window aggregates since the previous uplink:
+ * temperatures/pressure = mean, humidity = sample with worst humidity score,
+ * CO2 = max, gas = min, AQI = min. Status and gas baseline are from the
+ * current cycle at send time. Battery mV is the last reading in the window.
+ *
  * Example from README (mains, after gas learn):
  *   00 02 10 8A 09 CA 09 74 12 EE 12 AD 00 01 75 9F 48 E8 00 42 06 67 0B 01 48 E8
  */
@@ -80,27 +85,68 @@ function Decoder(bytes, port) {
   return decoded.data || { error: (decoded.errors || []).join("; ") };
 }
 
+function clampU16(value) {
+  return Math.max(0, Math.min(0xffff, Math.round(value)));
+}
+
+function beU16(value) {
+  const v = clampU16(value);
+  return [(v >> 8) & 0xff, v & 0xff];
+}
+
+function pickNumber() {
+  for (let i = 0; i < arguments.length; i++) {
+    if (typeof arguments[i] === "number") {
+      return arguments[i];
+    }
+  }
+  return null;
+}
+
 // Optional: encode interval / calibrate / reset downlinks (seconds are big-endian u16).
-// Port 4: battery_interval_s + mains_interval_s (or interval_s as alias for both).
+// Port 4 (8 bytes):
+//   battery_mode_measure_interval_s + battery_mode_tx_interval_s +
+//   mains_mode_measure_interval_s + mains_mode_tx_interval_s
+// Aliases: battery_mode_interval_s / mains_mode_interval_s set measure=tx;
+//          interval_s sets all four.
 function encodeDownlink(input) {
   const cmd = input.data || {};
-  const battery =
-    typeof cmd.battery_interval_s === "number"
-      ? cmd.battery_interval_s
-      : typeof cmd.interval_s === "number"
-        ? cmd.interval_s
-        : null;
-  const mains =
-    typeof cmd.mains_interval_s === "number"
-      ? cmd.mains_interval_s
-      : typeof cmd.interval_s === "number"
-        ? cmd.interval_s
-        : null;
-  if (battery != null && mains != null) {
-    const b = Math.max(0, Math.min(0xffff, Math.round(battery)));
-    const m = Math.max(0, Math.min(0xffff, Math.round(mains)));
+  const batteryMeasure = pickNumber(
+    cmd.battery_mode_measure_interval_s,
+    cmd.battery_mode_interval_s,
+    cmd.battery_interval_s,
+    cmd.interval_s
+  );
+  const batteryTx = pickNumber(
+    cmd.battery_mode_tx_interval_s,
+    cmd.battery_mode_interval_s,
+    cmd.battery_interval_s,
+    cmd.interval_s
+  );
+  const mainsMeasure = pickNumber(
+    cmd.mains_mode_measure_interval_s,
+    cmd.mains_measure_interval_s,
+    cmd.mains_mode_interval_s,
+    cmd.mains_interval_s,
+    cmd.interval_s
+  );
+  const mainsTx = pickNumber(
+    cmd.mains_mode_tx_interval_s,
+    cmd.mains_tx_interval_s,
+    cmd.mains_mode_interval_s,
+    cmd.mains_interval_s,
+    cmd.interval_s
+  );
+
+  if (
+    batteryMeasure != null &&
+    batteryTx != null &&
+    mainsMeasure != null &&
+    mainsTx != null
+  ) {
     return {
-      bytes: [(b >> 8) & 0xff, b & 0xff, (m >> 8) & 0xff, m & 0xff],
+      bytes: beU16(batteryMeasure)
+        .concat(beU16(batteryTx), beU16(mainsMeasure), beU16(mainsTx)),
       fPort: 4,
     };
   }
@@ -112,7 +158,7 @@ function encodeDownlink(input) {
   }
   return {
     errors: [
-      "unsupported downlink; use battery_interval_s+mains_interval_s, interval_s, calibrate, or reset",
+      "unsupported downlink; use battery_mode_measure_interval_s+battery_mode_tx_interval_s+mains_mode_measure_interval_s+mains_mode_tx_interval_s, interval_s, calibrate, or reset",
     ],
   };
 }

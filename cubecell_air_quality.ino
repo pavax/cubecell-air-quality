@@ -4,7 +4,8 @@
 #include "BME680.h"
 #include "SparkFun_SCD30_Arduino_Library.h"
 #include "credentials.h"
-#include "cubecell_utils.h"
+#include "src/utils/cubecell_utils.h"
+#include "src/utils/window_accum.h"
 
 BME680_Class BME680;
 SCD30 airSensor;
@@ -16,8 +17,10 @@ SCD30 airSensor;
 #define BME_CYCLES_NORMAL 2
 #define BME_CYCLES_FOR_GAS_READINGS 5
 #define WAKE_UP_PIN USER_KEY
-#define DEFAULT_BATTERY_TX_DUTY_MS (1000UL * 60 * 30)
-#define DEFAULT_MAINS_TX_DUTY_MS (1000UL * 60 * 5)
+#define DEFAULT_BATTERY_MODE_MEASURE_INTERVAL_MS (1000UL * 60 * 60)
+#define DEFAULT_BATTERY_MODE_TX_INTERVAL_MS (1000UL * 60 * 60 * 4)
+#define DEFAULT_MAINS_MODE_MEASURE_INTERVAL_MS (1000UL * 60 * 5)
+#define DEFAULT_MAINS_MODE_TX_INTERVAL_MS (1000UL * 60 * 60)
 #define PRESSURE_MIN_PA 70000L
 #define PRESSURE_MAX_PA 110000L
 #define PRESSURE_CHANGE_THRESHOLD_MBAR 10
@@ -53,10 +56,12 @@ LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
 /*LoraWan Class, Class A and Class C are supported*/
 DeviceClass_t loraWanClass = LORAWAN_CLASS;
 
-/*the application data transmission duty cycle.  value in [ms].*/
-uint32_t batteryTxDutyMs = DEFAULT_BATTERY_TX_DUTY_MS;
-uint32_t mainsTxDutyMs = DEFAULT_MAINS_TX_DUTY_MS;
-uint32_t appTxDutyCycle = DEFAULT_BATTERY_TX_DUTY_MS;
+/* Sleep/measure interval and separate uplink interval per mode, in [ms]. */
+uint32_t batteryModeMeasureIntervalMs = DEFAULT_BATTERY_MODE_MEASURE_INTERVAL_MS;
+uint32_t batteryModeTxIntervalMs = DEFAULT_BATTERY_MODE_TX_INTERVAL_MS;
+uint32_t mainsModeMeasureIntervalMs = DEFAULT_MAINS_MODE_MEASURE_INTERVAL_MS;
+uint32_t mainsModeTxIntervalMs = DEFAULT_MAINS_MODE_TX_INTERVAL_MS;
+uint32_t appTxDutyCycle = DEFAULT_BATTERY_MODE_MEASURE_INTERVAL_MS;
 
 /*OTAA or ABP*/
 bool overTheAirActivation = LORAWAN_NETMODE;
@@ -79,7 +84,11 @@ uint8_t confirmedNbTrials = 8;
 static unsigned int batteryVoltage;
 static unsigned int uptimeCount;
 static bool mainsConnected = false;
-static volatile bool accelWoke = false;
+static volatile bool userKeyWakePending = false;
+static bool forceUplink = false;
+// 0xFFFFFFFF: first cycle after boot/join always uplinks.
+static const uint32_t MS_SINCE_UPLINK_UNSET = 0xFFFFFFFFu;
+static uint32_t msSinceLastUplink = MS_SINCE_UPLINK_UNSET;
 static bool recalibrateDuty = false;
 static uint16_t appliedPressureMbar = 0;
 static bool keepSensorsPoweredOn = false;
@@ -88,7 +97,17 @@ static uint8_t gasLearnCount = 0;
 // -1: no valid AQI component. Otherwise AQI from 0 to 100.
 static int sleepAirQualityScore = -1;
 
+static WindowAccum windowAccum;
+
 static TimerEvent_t cycleWatchdogTimer;
+
+uint32_t activeMeasureIntervalMs() {
+  return mainsConnected ? mainsModeMeasureIntervalMs : batteryModeMeasureIntervalMs;
+}
+
+uint32_t activeTxIntervalMs() {
+  return mainsConnected ? mainsModeTxIntervalMs : batteryModeTxIntervalMs;
+}
 
 void onCycleTimeoutWatchdog() {
   Serial.println(F("Watchdog: Cycle Timed Out"));
@@ -222,6 +241,42 @@ uint32_t colorForAirQuality(int score) {
 void putUint16(uint8_t offset, uint16_t value) {
   appData[offset] = highByte(value);
   appData[offset + 1] = lowByte(value);
+}
+
+void packWindowIntoAppData(const WindowAccum &window, unsigned int uplinkCount,
+                           uint8_t sensorStatus, bool mains, int32_t gasBaselineOhm) {
+  int32_t packTemp1 = window.meanTemp1();
+  int32_t packTemp2 = window.meanTemp2();
+  int32_t packPressure = window.meanPressure();
+  int32_t packHumidity1 = window.packedHumidity1();
+  int32_t packHumidity2 = window.packedHumidity2();
+  int32_t packGas = window.packedGas();
+  int32_t packCo2 = window.packedCo2();
+  int packAqi = window.packedAqi();
+
+  appDataSize = 26;
+  putUint16(0, uplinkCount);
+  putUint16(2, window.batteryMv);
+  putUint16(4, packTemp1);
+  putUint16(6, packTemp2);
+  putUint16(8, round(packHumidity1 / 10));
+  putUint16(10, round(packHumidity2 / 10));
+  appData[12] = (uint32_t)packPressure >> 24;
+  appData[13] = (uint32_t)packPressure >> 16;
+  appData[14] = (uint32_t)packPressure >> 8;
+  appData[15] = (uint32_t)packPressure & 0xFF;
+  putUint16(16, round(packGas / 10));
+  putUint16(18, packAqi);
+  putUint16(20, packCo2);
+  appData[22] = sensorStatus;
+  appData[23] = mains ? 1 : 0;
+  putUint16(24, round(gasBaselineOhm / 10));
+
+  Serial.printf(
+      "Window T1=%ld T2=%ld H1=%ld H2=%ld P=%ld Gas=%ld Base=%ld CO2=%ld AQI=%d Bat=%u St=%u Mains=%u\r\n",
+      (long)packTemp1, (long)packTemp2, (long)packHumidity1, (long)packHumidity2, (long)packPressure,
+      (long)packGas, (long)gasBaselineOhm, (long)packCo2, packAqi, window.batteryMv, sensorStatus,
+      mains ? 1 : 0);
 }
 
 bool powerSensorsOn() {
@@ -435,13 +490,17 @@ void prepareTxFrame(uint8_t port) {
   uint8_t bmeStatus = 0;
   uint8_t scdStatus = 0;
 
-  appTxDutyCycle = mainsConnected ? mainsTxDutyMs : batteryTxDutyMs;
+  appTxDutyCycle = activeMeasureIntervalMs();
   if (!mainsConnected) {
     resetGasBaseline();
   }
 
-  Serial.printf("Measure uptime=%u battery=%u mV mains=%u interval=%lu s\r\n",
-                uptimeCount, batteryVoltage, mainsConnected ? 1 : 0, (unsigned long)(appTxDutyCycle / 1000));
+  Serial.printf(
+      "Measure uptime=%u battery=%u mV mains=%u measure=%lu s tx=%lu s since_tx=%lu s\r\n",
+      uptimeCount, batteryVoltage, mainsConnected ? 1 : 0,
+      (unsigned long)(appTxDutyCycle / 1000),
+      (unsigned long)(activeTxIntervalMs() / 1000),
+      (unsigned long)(msSinceLastUplink == MS_SINCE_UPLINK_UNSET ? 0 : msSinceLastUplink / 1000));
 
   // RGB and I2C share GPIO port 0. Lighting the LED writes the whole port, so do it before Wire.begin().
   if (LoRaWAN.isRgbEnabled()) {
@@ -508,30 +567,35 @@ void prepareTxFrame(uint8_t port) {
                 humidityScore, HUM_SCORE_MAX, co2Score, CO2_SCORE_MAX, gasScore, GAS_SCORE_MAX,
                 airQualityScore, (long)gasBaseline, bmeStatus * 10 + scdStatus);
 
-  appDataSize = 26;
-  putUint16(0, uptimeCount);
-  putUint16(2, batteryVoltage);
-  putUint16(4, temperature1);
-  putUint16(6, temperature2);
-  putUint16(8, round(humidity1 / 10));
-  putUint16(10, round(humidity2 / 10));
-  appData[12] = (uint32_t)pressure >> 24;
-  appData[13] = (uint32_t)pressure >> 16;
-  appData[14] = (uint32_t)pressure >> 8;
-  appData[15] = (uint32_t)pressure & 0xFF;
-  putUint16(16, round(gas / 10));
-  putUint16(18, airQualityScore);
-  putUint16(20, co2);
-  appData[22] = bmeStatus * 10 + scdStatus;
-  appData[23] = mainsConnected ? 1 : 0;
-  putUint16(24, round(gasBaseline / 10));
+  windowAccum.addBatterySample(batteryVoltage);
+  if (bmeStatus == 1) {
+    windowAccum.addTemperature1Sample(temperature1);
+    windowAccum.addPressureSample(pressure);
+  }
+  if (scdStatus == 1) {
+    windowAccum.addTemperature2Sample(temperature2);
+  }
+  if (hasHumidityMeasurement) {
+    windowAccum.addHumiditySample(humidity1, humidity2, humidityScore);
+  }
+  if (hasCo2Measurement) {
+    windowAccum.addCo2Sample(co2);
+  }
+  if (gas > 0) {
+    windowAccum.addGasSample(gas);
+  }
+  if (hasHumidityMeasurement || hasCo2Measurement || hasGasMeasurement) {
+    windowAccum.addAqiSample(airQualityScore);
+  }
 
-  Serial.printf("TX #%u T1=%ld T2=%ld H1=%ld H2=%ld P=%ld Gas=%ld Base=%ld CO2=%ld AQI=%d Bat=%u St=%u Mains=%u\r\n",
-                uptimeCount, (long)temperature1, (long)temperature2, (long)humidity1, (long)humidity2,
-                (long)pressure, (long)gas, (long)gasBaseline, (long)co2, airQualityScore, batteryVoltage,
-                appData[22], appData[23]);
+  packWindowIntoAppData(windowAccum, uptimeCount, bmeStatus * 10 + scdStatus, mainsConnected, gasBaseline);
+}
 
-  uptimeCount++;
+bool uplinkDue() {
+  if (forceUplink) {
+    return true;
+  }
+  return msSinceLastUplink >= activeTxIntervalMs();
 }
 
 void showSleepAirQuality() {
@@ -562,7 +626,7 @@ void prepareBeforeSleep() {
 
 void onWakeUp() {
   if (deviceState == DEVICE_STATE_SLEEP && digitalRead(WAKE_UP_PIN) == HIGH) {
-    accelWoke = true;
+    userKeyWakePending = true;
   }
 }
 
@@ -591,7 +655,8 @@ void setup() {
   deviceState = DEVICE_STATE_INIT;
   LoRaWAN.ifskipjoin();
 
-  accelWoke = false;
+  userKeyWakePending = false;
+  windowAccum.reset();
   pinMode(WAKE_UP_PIN, INPUT_PULLUP);
   attachInterrupt(WAKE_UP_PIN, onWakeUp, RISING);
 
@@ -608,8 +673,10 @@ void loop() {
       getDevParam();
 #endif
       // After getDevParam so Port-4 intervals beat AT/default DutyCycle.
-      loadPersistedSleepTimes(batteryTxDutyMs, mainsTxDutyMs);
-      appTxDutyCycle = digitalRead(GPIO3) == HIGH ? mainsTxDutyMs : batteryTxDutyMs;
+      loadPersistedSleepTimes(batteryModeMeasureIntervalMs, batteryModeTxIntervalMs,
+                              mainsModeMeasureIntervalMs, mainsModeTxIntervalMs);
+      mainsConnected = digitalRead(GPIO3) == HIGH;
+      appTxDutyCycle = activeMeasureIntervalMs();
       printDevParam();
       LoRaWAN.init(loraWanClass, loraWanRegion);
       deviceState = DEVICE_STATE_JOIN;
@@ -621,12 +688,25 @@ void loop() {
     }
     case DEVICE_STATE_SEND: {
       prepareTxFrame(appPort);
-      LoRaWAN.send();
+      if (uplinkDue()) {
+        LoRaWAN.send();
+        uptimeCount++;
+        msSinceLastUplink = 0;
+        forceUplink = false;
+        windowAccum.reset();
+      } else {
+        Serial.println(F("Uplink skipped (measure only)"));
+      }
       deviceState = DEVICE_STATE_CYCLE;
       break;
     }
     case DEVICE_STATE_CYCLE: {
       txDutyCycleTime = appTxDutyCycle + randr(0, APP_TX_DUTYCYCLE_RND);
+      if (msSinceLastUplink != MS_SINCE_UPLINK_UNSET) {
+        uint32_t nextSince = msSinceLastUplink + txDutyCycleTime;
+        msSinceLastUplink =
+            nextSince < msSinceLastUplink ? MS_SINCE_UPLINK_UNSET - 1 : nextSince;
+      }
       LoRaWAN.cycle(txDutyCycleTime);
       Serial.printf("Sleep %d s\r\n", (int)(txDutyCycleTime / 1000));
       prepareBeforeSleep();
@@ -634,10 +714,11 @@ void loop() {
       break;
     }
     case DEVICE_STATE_SLEEP: {
-      if (accelWoke) {
+      if (userKeyWakePending) {
         Serial.println(F("Wakeup: send now"));
+        forceUplink = true;
         LoRaWAN.txNextPacket();
-        accelWoke = false;
+        userKeyWakePending = false;
       } else {
         LoRaWAN.sleep();
       }
@@ -671,22 +752,42 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
   }
   Serial.println();
 
-  if (mcpsIndication->Port == 4 && mcpsIndication->BufferSize >= 4) {
-    uint16_t batterySeconds =
+  if (mcpsIndication->Port == 4 && mcpsIndication->BufferSize >= 8) {
+    uint16_t batteryModeMeasureIntervalSeconds =
         (uint16_t)(mcpsIndication->Buffer[1] | (mcpsIndication->Buffer[0] << 8));
-    uint16_t mainsSeconds =
+    uint16_t batteryModeTxIntervalSeconds =
         (uint16_t)(mcpsIndication->Buffer[3] | (mcpsIndication->Buffer[2] << 8));
-    if (batterySeconds == 0 || mainsSeconds == 0) {
-      Serial.println(F("Duty cycles ignored (0 s)"));
+    uint16_t mainsModeMeasureIntervalSeconds =
+        (uint16_t)(mcpsIndication->Buffer[5] | (mcpsIndication->Buffer[4] << 8));
+    uint16_t mainsModeTxIntervalSeconds =
+        (uint16_t)(mcpsIndication->Buffer[7] | (mcpsIndication->Buffer[6] << 8));
+    if (batteryModeMeasureIntervalSeconds == 0 || batteryModeTxIntervalSeconds == 0 ||
+        mainsModeMeasureIntervalSeconds == 0 || mainsModeTxIntervalSeconds == 0) {
+      Serial.println(F("Intervals ignored (0 s)"));
       return;
     }
-    batteryTxDutyMs = (uint32_t)batterySeconds * 1000UL;
-    mainsTxDutyMs = (uint32_t)mainsSeconds * 1000UL;
-    appTxDutyCycle = mainsConnected ? mainsTxDutyMs : batteryTxDutyMs;
-    persistSleepTimes(batterySeconds, mainsSeconds);
-    Serial.printf("Duty cycles battery=%lu ms mains=%lu ms (active=%lu ms)\r\n",
-                  (unsigned long)batteryTxDutyMs, (unsigned long)mainsTxDutyMs,
-                  (unsigned long)appTxDutyCycle);
+    if (batteryModeTxIntervalSeconds < batteryModeMeasureIntervalSeconds) {
+      Serial.printf("battery_tx raised from %u s to measure %u s\r\n",
+                    batteryModeTxIntervalSeconds, batteryModeMeasureIntervalSeconds);
+      batteryModeTxIntervalSeconds = batteryModeMeasureIntervalSeconds;
+    }
+    if (mainsModeTxIntervalSeconds < mainsModeMeasureIntervalSeconds) {
+      Serial.printf("mains_tx raised from %u s to measure %u s\r\n",
+                    mainsModeTxIntervalSeconds, mainsModeMeasureIntervalSeconds);
+      mainsModeTxIntervalSeconds = mainsModeMeasureIntervalSeconds;
+    }
+    batteryModeMeasureIntervalMs = (uint32_t)batteryModeMeasureIntervalSeconds * 1000UL;
+    batteryModeTxIntervalMs = (uint32_t)batteryModeTxIntervalSeconds * 1000UL;
+    mainsModeMeasureIntervalMs = (uint32_t)mainsModeMeasureIntervalSeconds * 1000UL;
+    mainsModeTxIntervalMs = (uint32_t)mainsModeTxIntervalSeconds * 1000UL;
+    appTxDutyCycle = activeMeasureIntervalMs();
+    persistSleepTimes(batteryModeMeasureIntervalSeconds, batteryModeTxIntervalSeconds,
+                      mainsModeMeasureIntervalSeconds, mainsModeTxIntervalSeconds);
+    Serial.printf(
+        "Intervals bat_measure=%lu ms bat_tx=%lu ms mains_measure=%lu ms mains_tx=%lu ms (active=%lu ms)\r\n",
+        (unsigned long)batteryModeMeasureIntervalMs, (unsigned long)batteryModeTxIntervalMs,
+        (unsigned long)mainsModeMeasureIntervalMs, (unsigned long)mainsModeTxIntervalMs,
+        (unsigned long)appTxDutyCycle);
   } else if (mcpsIndication->Port == 5) {
     recalibrateDuty = true;
     Serial.println(F("SCD30: calibrate next cycle"));
