@@ -28,7 +28,8 @@ SCD30 airSensor;
 #define SCD30_PRESSURE_MAX_MBAR 1200
 #define SENSOR_POWER_OFF_MS 4000
 #define SENSOR_ATTEMPTS 3
-#define CYCLE_WATCHDOG_MAX_MS (1000UL * 60 * 60 * 2)
+// Extra time beyond the measure interval before a hung cycle forces HW_Reset.
+#define CYCLE_WATCHDOG_MARGIN_MS (1000UL * 60 * 60)
 
 #define HUM_COMFORT_MIN 30
 #define HUM_COMFORT_MAX 60
@@ -115,10 +116,11 @@ void onCycleTimeoutWatchdog() {
   HW_Reset(0);
 }
 
-void resetCycleWatchdog() {
-  Serial.println(F("Watchdog: reset"));
+void resetCycleWatchdog(uint32_t measureIntervalMs) {
+  uint32_t watchdogMs = measureIntervalMs + CYCLE_WATCHDOG_MARGIN_MS;
+  Serial.printf("Watchdog: reset %lu s\r\n", (unsigned long)(watchdogMs / 1000));
   TimerStop(&cycleWatchdogTimer);
-  TimerSetValue(&cycleWatchdogTimer, CYCLE_WATCHDOG_MAX_MS);
+  TimerSetValue(&cycleWatchdogTimer, watchdogMs);
   TimerStart(&cycleWatchdogTimer);
 }
 
@@ -469,13 +471,14 @@ uint8_t readScd30(int32_t &co2, int32_t &temperature, int32_t &humidity, bool di
 void prepareTxFrame(uint8_t port) {
   (void)port;
 
-  // Arm before sensors: a hang in measure still trips reset within 6h.
-  resetCycleWatchdog();
-
   detachInterrupt(WAKE_UP_PIN);
   batteryVoltage = getBatteryVoltage();
   mainsConnected = digitalRead(GPIO3) == HIGH;
   attachInterrupt(WAKE_UP_PIN, onWakeUp, RISING);
+
+  appTxDutyCycle = activeMeasureIntervalMs();
+  // After mode detect: hang during measure trips reset before the next wake is due.
+  resetCycleWatchdog(appTxDutyCycle);
 
   // Debug: LED stays on while awake, including on battery.
   LoRaWAN.enableRgb();
@@ -490,7 +493,6 @@ void prepareTxFrame(uint8_t port) {
   uint8_t bmeStatus = 0;
   uint8_t scdStatus = 0;
 
-  appTxDutyCycle = activeMeasureIntervalMs();
   if (!mainsConnected) {
     resetGasBaseline();
   }
