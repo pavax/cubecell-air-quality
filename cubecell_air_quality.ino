@@ -16,8 +16,8 @@ SCD30 airSensor;
 #define BME_CYCLES_NORMAL 2
 #define BME_CYCLES_FOR_GAS_READINGS 5
 #define WAKE_UP_PIN USER_KEY
-#define BATTERY_TX_DUTY_MS (1000UL * 60 * 30)
-#define MAINS_TX_DUTY_MS (1000UL * 60 * 5)
+#define DEFAULT_BATTERY_TX_DUTY_MS (1000UL * 60 * 30)
+#define DEFAULT_MAINS_TX_DUTY_MS (1000UL * 60 * 5)
 #define PRESSURE_MIN_PA 70000L
 #define PRESSURE_MAX_PA 110000L
 #define PRESSURE_CHANGE_THRESHOLD_MBAR 10
@@ -54,9 +54,9 @@ LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
 DeviceClass_t loraWanClass = LORAWAN_CLASS;
 
 /*the application data transmission duty cycle.  value in [ms].*/
-uint32_t batteryTxDutyMs = BATTERY_TX_DUTY_MS;
-uint32_t mainsTxDutyMs = MAINS_TX_DUTY_MS;
-uint32_t appTxDutyCycle = BATTERY_TX_DUTY_MS;
+uint32_t batteryTxDutyMs = DEFAULT_BATTERY_TX_DUTY_MS;
+uint32_t mainsTxDutyMs = DEFAULT_MAINS_TX_DUTY_MS;
+uint32_t appTxDutyCycle = DEFAULT_BATTERY_TX_DUTY_MS;
 
 /*OTAA or ABP*/
 bool overTheAirActivation = LORAWAN_NETMODE;
