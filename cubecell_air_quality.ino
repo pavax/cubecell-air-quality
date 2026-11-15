@@ -472,16 +472,14 @@ uint8_t readScd30(int32_t &co2, int32_t &temperature, int32_t &humidity, bool di
 void prepareTxFrame(uint8_t port) {
   (void)port;
 
-  detachInterrupt(WAKE_UP_PIN);
-  batteryVoltage = getBatteryVoltage();
   mainsConnected = digitalRead(GPIO3) == HIGH;
-  attachInterrupt(WAKE_UP_PIN, onWakeUp, RISING);
-
   appTxDutyCycle = activeMeasureIntervalMs();
-  // After mode detect: hang during measure trips reset before the next wake is due.
   resetCycleWatchdog(appTxDutyCycle);
 
-  // Debug: LED stays on while awake, including on battery.
+  detachInterrupt(WAKE_UP_PIN);
+  batteryVoltage = getBatteryVoltage();
+  attachInterrupt(WAKE_UP_PIN, onWakeUp, RISING);
+
   LoRaWAN.enableRgb();
 
   int32_t temperature1 = 0;
