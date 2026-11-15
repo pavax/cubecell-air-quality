@@ -93,7 +93,7 @@ Ein Beispiel-Decoder für The Things Stack / ChirpStack liegt unter [`examples/p
 |---|---|---|
 | 2 | Uplink, 27 Bytes | — |
 | 4 | Intervalle in Sekunden (uint16, big-endian), persistent im EEPROM | siehe Beispiele unten |
-| 5 | SCD30 bei der nächsten Messung auf 400 ppm kalibrieren, nach 120 s Dauerbetrieb | `01` (Byteinhalt egal) |
+| 5 | SCD30 bei der nächsten Messung auf 420 ppm kalibrieren, nach 120 s Dauerbetrieb | `01` (Byteinhalt egal) |
 | 9 | Soft-Reset (`HW_Reset`) | `01` (Byteinhalt egal) |
 
 Port 4, **8 Bytes:** `battery_mode_measure_interval_s` + `battery_mode_tx_interval_s` + `mains_mode_measure_interval_s` + `mains_mode_tx_interval_s`. Ist `tx` kleiner als `measure` (je Modus), wird es auf das Messintervall angehoben. `0` in einem Wert wird verworfen.
