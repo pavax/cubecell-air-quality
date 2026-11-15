@@ -1,5 +1,5 @@
 /**
- * Payload decoder for CubeCell air quality (Port 2, 26 bytes, big-endian).
+ * Payload decoder for CubeCell air quality (Port 2, 27 bytes, big-endian).
  *
  * Drop-in for The Things Stack / ChirpStack v4 (`decodeUplink`).
  * Older stacks: use `Decoder(bytes, port)` below the same way.
@@ -8,9 +8,10 @@
  * temperatures/pressure = mean, humidity = sample with worst humidity score,
  * CO2 = max, gas = min, AQI = min. Status and gas baseline are from the
  * current cycle at send time. Battery mV is the last reading in the window.
+ * sample_count is the number of measure cycles in the window (max 255).
  *
  * Example from README (mains, after gas learn):
- *   00 02 10 8A 09 CA 09 74 12 EE 12 AD 00 01 75 9F 48 E8 00 42 06 67 0B 01 48 E8
+ *   00 02 10 8A 09 CA 09 74 12 EE 12 AD 00 01 75 9F 48 E8 00 42 06 67 0B 01 48 E8 01
  */
 
 function u16(bytes, i) {
@@ -37,8 +38,8 @@ function decodePayload(bytes, port) {
   if (port !== 2) {
     return { errors: ["unexpected port " + port] };
   }
-  if (!bytes || bytes.length !== 26) {
-    return { errors: ["expected 26 bytes, got " + (bytes ? bytes.length : 0)] };
+  if (!bytes || bytes.length !== 27) {
+    return { errors: ["expected 27 bytes, got " + (bytes ? bytes.length : 0)] };
   }
 
   const status = bytes[22];
@@ -70,6 +71,7 @@ function decodePayload(bytes, port) {
       bme_status_label: sensorStatusLabel(bmeStatus),
       scd_status_label: sensorStatusLabel(scdStatus),
       mains: bytes[23] === 1,
+      sample_count: bytes[26],
     },
   };
 }

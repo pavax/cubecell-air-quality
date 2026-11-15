@@ -1,6 +1,6 @@
 # CubeCell Luftqualität
 
-Firmware für das Heltec CubeCell **HTCC-AB01** (EU868, OTAA, Port 2). Sie misst BME680 und SCD30 und sendet alle Werte in einem 26-Byte-Paket.
+Firmware für das Heltec CubeCell **HTCC-AB01** (EU868, OTAA, Port 2). Sie misst BME680 und SCD30 und sendet alle Werte in einem 27-Byte-Paket.
 
 Ob der Knoten im **Netzbetrieb** oder im **Batteriebetrieb** läuft, erkennt die Firmware über einen Spannungsteiler an Pin GPIO3. Am Teiler liegt **VIN** an. Liegt dort Spannung an, gilt Netzbetrieb. Ohne externe Versorgung zieht der Teiler den Pin auf Masse, und es gilt Batteriebetrieb.
 
@@ -64,7 +64,7 @@ Der Gaswert bleibt zusätzlich roh im Paket. Die beheizte Metalloxid-Schicht des
 
 ## Paket
 
-26 Bytes, Port 2, big-endian. Die Temperaturen sind vorzeichenbehaftet zu lesen. Seit dem letzten Uplink aggregiert die Firmware das Messfenster; nach dem Senden wird es geleert. Die Beispielspalte ist eine Messung im Netzbetrieb nach der Gas-Lernphase.
+27 Bytes, Port 2, big-endian. Die Temperaturen sind vorzeichenbehaftet zu lesen. Seit dem letzten Uplink aggregiert die Firmware das Messfenster; nach dem Senden wird es geleert. Die Beispielspalte ist eine Messung im Netzbetrieb nach der Gas-Lernphase.
 
 | Bytes | Wert | Fenster | Beispiel | bedeutet |
 |---|---|---|---|---|
@@ -81,6 +81,7 @@ Der Gaswert bleibt zusätzlich roh im Paket. Die beheizte Metalloxid-Schicht des
 | 22 | Status | aktuell | 11 | BME und SCD beide gültig |
 | 23 | Betriebsart | aktuell | 1 | Netzbetrieb |
 | 24–25 | Gas-Baseline, Ω/10 | aktuell | 18664 | 186640 Ω |
+| 26 | Sample-Count | Messzyklen im Fenster | 1 | ein Zyklus seit letztem Uplink (max. 255) |
 
 Byte 22 ist `bme * 10 + scd`. `1` ist gültig, `0` fehlt, `9` ist ein SCD30-Timeout. `11` heißt also beide gültig, `19` heißt BME gültig und SCD30 im Timeout. Byte 23 ist `1` im Netzbetrieb und `0` im Batteriebetrieb.
 
@@ -90,7 +91,7 @@ Ein Beispiel-Decoder für The Things Stack / ChirpStack liegt unter [`examples/p
 
 | Port | Inhalt | Beispiel (Hex) |
 |---|---|---|
-| 2 | Uplink, 26 Bytes | — |
+| 2 | Uplink, 27 Bytes | — |
 | 4 | Intervalle in Sekunden (uint16, big-endian), persistent im EEPROM | siehe Beispiele unten |
 | 5 | SCD30 bei der nächsten Messung auf 400 ppm kalibrieren, nach 120 s Dauerbetrieb | `01` (Byteinhalt egal) |
 | 9 | Soft-Reset (`HW_Reset`) | `01` (Byteinhalt egal) |

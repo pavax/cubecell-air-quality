@@ -22,6 +22,8 @@ struct WindowAccum {
   int aqiMin;
   bool hasAqi;
   unsigned int batteryMv;
+  // Measurement cycles in this window (capped at 255 when packing).
+  uint8_t sampleCount;
 
   void reset();
   void addBatterySample(unsigned int batteryMvValue);

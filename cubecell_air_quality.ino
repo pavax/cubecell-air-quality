@@ -256,7 +256,7 @@ void packWindowIntoAppData(const WindowAccum &window, unsigned int uplinkCount,
   int32_t packCo2 = window.packedCo2();
   int packAqi = window.packedAqi();
 
-  appDataSize = 26;
+  appDataSize = 27;
   putUint16(0, uplinkCount);
   putUint16(2, window.batteryMv);
   putUint16(4, packTemp1);
@@ -273,12 +273,13 @@ void packWindowIntoAppData(const WindowAccum &window, unsigned int uplinkCount,
   appData[22] = sensorStatus;
   appData[23] = mains ? 1 : 0;
   putUint16(24, round(gasBaselineOhm / 10));
+  appData[26] = window.sampleCount;
 
   Serial.printf(
-      "Window T1=%ld T2=%ld H1=%ld H2=%ld P=%ld Gas=%ld Base=%ld CO2=%ld AQI=%d Bat=%u St=%u Mains=%u\r\n",
+      "Window T1=%ld T2=%ld H1=%ld H2=%ld P=%ld Gas=%ld Base=%ld CO2=%ld AQI=%d Bat=%u St=%u Mains=%u samples=%u\r\n",
       (long)packTemp1, (long)packTemp2, (long)packHumidity1, (long)packHumidity2, (long)packPressure,
       (long)packGas, (long)gasBaselineOhm, (long)packCo2, packAqi, window.batteryMv, sensorStatus,
-      mains ? 1 : 0);
+      mains ? 1 : 0, window.sampleCount);
 }
 
 bool powerSensorsOn() {

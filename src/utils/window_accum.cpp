@@ -9,6 +9,9 @@ void WindowAccum::reset() {
 
 void WindowAccum::addBatterySample(unsigned int batteryMvValue) {
   batteryMv = batteryMvValue;
+  if (sampleCount < 255) {
+    sampleCount++;
+  }
 }
 
 void WindowAccum::addTemperature1Sample(int32_t temperature1) {
@@ -92,3 +95,4 @@ int32_t WindowAccum::packedCo2() const {
 int WindowAccum::packedAqi() const {
   return hasAqi ? aqiMin : 0;
 }
+  
