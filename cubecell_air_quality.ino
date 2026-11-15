@@ -4,6 +4,7 @@
 #include "BME680.h"
 #include "SparkFun_SCD30_Arduino_Library.h"
 #include "credentials.h"
+#include "cubecell_utils.h"
 
 BME680_Class BME680;
 SCD30 airSensor;
@@ -53,6 +54,8 @@ LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
 DeviceClass_t loraWanClass = LORAWAN_CLASS;
 
 /*the application data transmission duty cycle.  value in [ms].*/
+uint32_t batteryTxDutyMs = BATTERY_TX_DUTY_MS;
+uint32_t mainsTxDutyMs = MAINS_TX_DUTY_MS;
 uint32_t appTxDutyCycle = BATTERY_TX_DUTY_MS;
 
 /*OTAA or ABP*/
@@ -432,7 +435,7 @@ void prepareTxFrame(uint8_t port) {
   uint8_t bmeStatus = 0;
   uint8_t scdStatus = 0;
 
-  appTxDutyCycle = mainsConnected ? MAINS_TX_DUTY_MS : BATTERY_TX_DUTY_MS;
+  appTxDutyCycle = mainsConnected ? mainsTxDutyMs : batteryTxDutyMs;
   if (!mainsConnected) {
     resetGasBaseline();
   }
@@ -604,6 +607,9 @@ void loop() {
 #if (AT_SUPPORT)
       getDevParam();
 #endif
+      // After getDevParam so Port-4 intervals beat AT/default DutyCycle.
+      loadPersistedSleepTimes(batteryTxDutyMs, mainsTxDutyMs);
+      appTxDutyCycle = digitalRead(GPIO3) == HIGH ? mainsTxDutyMs : batteryTxDutyMs;
       printDevParam();
       LoRaWAN.init(loraWanClass, loraWanRegion);
       deviceState = DEVICE_STATE_JOIN;
@@ -665,11 +671,22 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
   }
   Serial.println();
 
-  if (mcpsIndication->Port == 4 && mcpsIndication->BufferSize >= 2) {
-    int newSleepTime = mcpsIndication->Buffer[1] | (mcpsIndication->Buffer[0] << 8);
-    appTxDutyCycle = newSleepTime * 1000;
-    saveDr();
-    Serial.printf("Duty cycle %lu ms\r\n", (unsigned long)appTxDutyCycle);
+  if (mcpsIndication->Port == 4 && mcpsIndication->BufferSize >= 4) {
+    uint16_t batterySeconds =
+        (uint16_t)(mcpsIndication->Buffer[1] | (mcpsIndication->Buffer[0] << 8));
+    uint16_t mainsSeconds =
+        (uint16_t)(mcpsIndication->Buffer[3] | (mcpsIndication->Buffer[2] << 8));
+    if (batterySeconds == 0 || mainsSeconds == 0) {
+      Serial.println(F("Duty cycles ignored (0 s)"));
+      return;
+    }
+    batteryTxDutyMs = (uint32_t)batterySeconds * 1000UL;
+    mainsTxDutyMs = (uint32_t)mainsSeconds * 1000UL;
+    appTxDutyCycle = mainsConnected ? mainsTxDutyMs : batteryTxDutyMs;
+    persistSleepTimes(batterySeconds, mainsSeconds);
+    Serial.printf("Duty cycles battery=%lu ms mains=%lu ms (active=%lu ms)\r\n",
+                  (unsigned long)batteryTxDutyMs, (unsigned long)mainsTxDutyMs,
+                  (unsigned long)appTxDutyCycle);
   } else if (mcpsIndication->Port == 5) {
     recalibrateDuty = true;
     Serial.println(F("SCD30: calibrate next cycle"));

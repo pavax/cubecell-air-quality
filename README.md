@@ -44,7 +44,7 @@ Abstand zwischen zwei Sendungen: **5 Minuten**.
 
 Die Druckkompensation des SCD30 kommt vom BME680 (700–1200 mbar). Beim BME680 wird immer die erste Messung verworfen, die letzte plausible bleibt. Beim SCD30 wird die erste Messung nur nach einem Kaltstart verworfen. Lief die Messung durch den Schlaf weiter, gehen beide Luftfeuchtigkeitswerte in den AQI ein.
 
-Ein Downlink kann das Intervall nur bis zur nächsten Messung ändern. Danach setzt die Firmware es wieder aus der Betriebsart: 30 Minuten im Batteriebetrieb, 5 Minuten im Netzbetrieb.
+Port 4 setzt beide Intervalle dauerhaft (EEPROM). Ohne gespeicherte Werte gelten die Defaults: 30 Minuten im Batteriebetrieb, 5 Minuten im Netzbetrieb.
 
 ## Luftqualität
 
@@ -91,11 +91,30 @@ Ein Beispiel-Decoder für The Things Stack / ChirpStack liegt unter [`examples/p
 | Port | Inhalt | Beispiel (Hex) |
 |---|---|---|
 | 2 | Uplink, 26 Bytes | — |
-| 4 | Intervall in Sekunden (uint16, big-endian), gilt bis zur nächsten Messung | `0384` = 900 s (15 min), `0E10` = 3600 s (1 h), `3840` = 14400 s (4 h) |
+| 4 | Batterie- und Netz-Intervall in Sekunden (je uint16, big-endian), persistent im EEPROM | siehe Beispiele unten |
 | 5 | SCD30 bei der nächsten Messung auf 400 ppm kalibrieren, nach 120 s Dauerbetrieb | `01` (Byteinhalt egal) |
 | 9 | Soft-Reset (`HW_Reset`) | `01` (Byteinhalt egal) |
 
-Port 4 braucht mindestens zwei Bytes. Port 5 und 9 werten nur den Port aus; ein beliebiges Byte reicht. Dieselbe Kalibrierung startet über den AT-Befehl zur Neukalibrierung. Die automatische Selbstkalibrierung des SCD30 bleibt aus. Eine Kalibrierung ist nur in echter Frischluft sinnvoll.
+Port 4 braucht vier Bytes: Bytes 0–1 Batterie, Bytes 2–3 Netz. `0` in einem der beiden Werte wird verworfen.
+
+| Intervall | Sekunden | Hex (uint16) |
+|---|---|---|
+| 30 min | 1800 | `0708` |
+| 1 h | 3600 | `0E10` |
+| 4 h | 14400 | `3840` |
+| 6 h | 21600 | `5460` |
+
+Beispiele (Batterie + Netz):
+
+| Bedeutung | Hex |
+|---|---|
+| Batterie 30 min, Netz 30 min | `07080708` |
+| Batterie 1 h, Netz 30 min | `0E100708` |
+| Batterie 4 h, Netz 1 h | `38400E10` |
+| Batterie 6 h, Netz 1 h | `54600E10` |
+| Batterie 6 h, Netz 4 h | `54603840` |
+
+Port 5 und 9 werten nur den Port aus; ein beliebiges Byte reicht. Dieselbe Kalibrierung startet über den AT-Befehl zur Neukalibrierung. Die automatische Selbstkalibrierung des SCD30 bleibt aus. Eine Kalibrierung ist nur in echter Frischluft sinnvoll.
 
 ## Patches am CubeCell-Core
 

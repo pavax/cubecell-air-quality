@@ -81,11 +81,28 @@ function Decoder(bytes, port) {
 }
 
 // Optional: encode interval / calibrate / reset downlinks (seconds are big-endian u16).
+// Port 4: battery_interval_s + mains_interval_s (or interval_s as alias for both).
 function encodeDownlink(input) {
   const cmd = input.data || {};
-  if (typeof cmd.interval_s === "number") {
-    const s = Math.max(0, Math.min(0xffff, Math.round(cmd.interval_s)));
-    return { bytes: [(s >> 8) & 0xff, s & 0xff], fPort: 4 };
+  const battery =
+    typeof cmd.battery_interval_s === "number"
+      ? cmd.battery_interval_s
+      : typeof cmd.interval_s === "number"
+        ? cmd.interval_s
+        : null;
+  const mains =
+    typeof cmd.mains_interval_s === "number"
+      ? cmd.mains_interval_s
+      : typeof cmd.interval_s === "number"
+        ? cmd.interval_s
+        : null;
+  if (battery != null && mains != null) {
+    const b = Math.max(0, Math.min(0xffff, Math.round(battery)));
+    const m = Math.max(0, Math.min(0xffff, Math.round(mains)));
+    return {
+      bytes: [(b >> 8) & 0xff, b & 0xff, (m >> 8) & 0xff, m & 0xff],
+      fPort: 4,
+    };
   }
   if (cmd.calibrate === true) {
     return { bytes: [1], fPort: 5 };
@@ -93,5 +110,9 @@ function encodeDownlink(input) {
   if (cmd.reset === true) {
     return { bytes: [1], fPort: 9 };
   }
-  return { errors: ["unsupported downlink; use interval_s, calibrate, or reset"] };
+  return {
+    errors: [
+      "unsupported downlink; use battery_interval_s+mains_interval_s, interval_s, calibrate, or reset",
+    ],
+  };
 }
